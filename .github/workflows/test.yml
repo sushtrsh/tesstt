@@ -22,6 +22,15 @@ jobs:
           echo "Name   : $RUNNER_NAME"
           echo "Image  : ${ImageOS:-n/a} ${ImageVersion:-n/a}"
 
+      - name: Disk sebelum hapus
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -in 'C','D' } |
+            Select-Object Name,
+              @{n='Used_GB';e={[math]::Round($_.Used/1GB,1)}},
+              @{n='Free_GB';e={[math]::Round($_.Free/1GB,1)}},
+              @{n='Total_GB';e={[math]::Round(($_.Used + $_.Free)/1GB,1)}} | Format-Table
+
       - name: Detail isi folder besar
         shell: pwsh
         run: |
@@ -58,20 +67,77 @@ jobs:
         shell: pwsh
         run: |
           $kandidat = @(
-            'C:\Android',
+            'C:\Program Files\Microsoft Visual Studio',
             'C:\Program Files (x86)\Android',
-            'C:\Program Files\Microsoft SQL Server',
+            'C:\Program Files\Azure Cosmos DB Emulator',
+            'C:\Program Files\LLVM',
+            'C:\Program Files\MongoDB',
+            'C:\Program Files\PostgreSQL',
+            'C:\Program Files\MySQL',
+            'C:\Program Files\Microsoft Service Fabric',
+            'C:\Program Files\Unity Hub',
+            'C:\ghcup',
+            'C:\rtools45',
+            'C:\Miniconda',
             'C:\Julia',
-            'C:\hostedtoolcache\windows\Ruby',
+            'C:\Strawberry',
+            'C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk',
+            'C:\hostedtoolcache\windows\CodeQL',
+            'C:\hostedtoolcache\windows\go',
             'C:\hostedtoolcache\windows\PyPy',
-            'C:\hostedtoolcache\windows\go'
+            'C:\hostedtoolcache\windows\Ruby'
           )
           foreach ($p in $kandidat) {
             Write-Host "Hapus: $p"
             Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path $p) { Write-Host "  -> masih ada sisa (kemungkinan file kekunci)" }
           }
+
+      - name: Disk setelah hapus
+        shell: pwsh
+        run: |
           Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -in 'C','D' } |
             Select-Object Name,
               @{n='Used_GB';e={[math]::Round($_.Used/1GB,1)}},
-              @{n='Free_GB';e={[math]::Round($_.Free/1GB,1)}} | Format-Table
-              
+              @{n='Free_GB';e={[math]::Round($_.Free/1GB,1)}},
+              @{n='Total_GB';e={[math]::Round(($_.Used + $_.Free)/1GB,1)}} | Format-Table
+
+      - name: Inspect lebih dalam (folder yang nggak dihapus)
+        shell: pwsh
+        run: |
+          $targets = @(
+            'C:\Program Files\dotnet',
+            'C:\Program Files (x86)\Microsoft SDKs',
+            'C:\Program Files (x86)\Microsoft',
+            'C:\Program Files (x86)\Windows Kits',
+            'C:\Program Files (x86)\Reference Assemblies',
+            'C:\Program Files\WSL',
+            'C:\Program Files\WindowsPowerShell',
+            'C:\ProgramData\chocolatey',
+            'C:\ProgramData\Microsoft',
+            'C:\ProgramData\Package Cache',
+            'C:\hostedtoolcache\windows\Python',
+            'C:\hostedtoolcache\windows\node',
+            'C:\Users\runneradmin',
+            'C:\Windows'
+          )
+
+          foreach ($t in $targets) {
+            Write-Host ""
+            Write-Host "=== Isi $t (top 15) ==="
+            if (-not (Test-Path $t)) { Write-Host "(nggak ada)"; continue }
+
+            Get-ChildItem $t -Directory -Force -ErrorAction SilentlyContinue |
+              ForEach-Object -Parallel {
+                $s = (Get-ChildItem $_.FullName -Recurse -Force -File -ErrorAction SilentlyContinue |
+                      Measure-Object Length -Sum).Sum
+                [pscustomobject]@{
+                  Folder = $_.FullName
+                  GB     = [math]::Round(($s / 1GB), 2)
+                }
+              } -ThrottleLimit 4 |
+              Sort-Object GB -Descending |
+              Select-Object -First 15 |
+              Format-Table -AutoSize
+          }
+          
