@@ -1,18 +1,17 @@
-name: Check Runner Specs
+name: Check Windows Specs
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+    inputs:
+      hapus:
+        description: "Hapus folder kandidat setelah di-list? (default: cuma list)"
+        type: boolean
+        default: false
 
 jobs:
   specs:
-    name: Specs (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+    name: Specs (windows-latest)
+    runs-on: windows-latest
 
     steps:
       - name: Info runner
@@ -23,37 +22,79 @@ jobs:
           echo "Name   : $RUNNER_NAME"
           echo "Image  : ${ImageOS:-n/a} ${ImageVersion:-n/a}"
 
-      - name: Spek Linux
-        if: runner.os == 'Linux'
-        run: |
-          cat /etc/os-release | head -n 3
-          uname -a
-          echo "--- CPU ---"
-          lscpu | grep -E "Model name|^CPU\(s\)|Thread|Core|MHz"
-          echo "--- RAM ---"
-          free -h
-          echo "--- Disk ---"
-          df -h /
-
-      - name: Spek macOS
-        if: runner.os == 'macOS'
-        run: |
-          sw_vers
-          echo "--- CPU ---"
-          sysctl -n machdep.cpu.brand_string
-          echo "Cores: $(sysctl -n hw.ncpu)"
-          echo "--- RAM ---"
-          echo "$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
-          echo "--- Disk ---"
-          df -h /
-
       - name: Spek Windows
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
           Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
           $ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
           Write-Host ("RAM: {0:N1} GB" -f $ram)
-          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
-          
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -in 'C','D' } |
+            Select-Object Name,
+              @{n='Used_GB';e={[math]::Round($_.Used/1GB,1)}},
+              @{n='Free_GB';e={[math]::Round($_.Free/1GB,1)}} | Format-Table
+
+      - name: List ukuran folder (cek dulu sebelum hapus)
+        shell: pwsh
+        run: |
+          function Get-DirSizeGB($p) {
+            $s = (Get-ChildItem $p -Recurse -Force -File -ErrorAction SilentlyContinue |
+                  Measure-Object Length -Sum).Sum
+            [math]::Round(($s / 1GB), 2)
+          }
+
+          Write-Host "=== Folder level atas di C:\ ==="
+          Get-ChildItem 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { [pscustomobject]@{ Folder = $_.FullName; GB = Get-DirSizeGB $_.FullName } } |
+            Sort-Object GB -Descending | Format-Table -AutoSize
+
+          Write-Host "=== Isi C:\Program Files dan (x86) ==="
+          Get-ChildItem 'C:\Program Files','C:\Program Files (x86)' -Directory -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { [pscustomobject]@{ Folder = $_.FullName; GB = Get-DirSizeGB $_.FullName } } |
+            Sort-Object GB -Descending | Select-Object -First 15 | Format-Table -AutoSize
+
+          Write-Host "=== Isi C:\hostedtoolcache\windows ==="
+          Get-ChildItem 'C:\hostedtoolcache\windows' -Directory -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { [pscustomobject]@{ Folder = $_.FullName; GB = Get-DirSizeGB $_.FullName } } |
+            Sort-Object GB -Descending | Format-Table -AutoSize
+
+          Write-Host "=== Kandidat hapus (ada / nggak + ukuran) ==="
+          $kandidat = @(
+            'C:\Android',
+            'C:\Program Files (x86)\Android',
+            'C:\Program Files\Microsoft SQL Server',
+            'C:\Julia',
+            'C:\hostedtoolcache\windows\Ruby',
+            'C:\hostedtoolcache\windows\PyPy',
+            'C:\hostedtoolcache\windows\go'
+          )
+          $kandidat | ForEach-Object {
+            $ada = Test-Path $_
+            [pscustomobject]@{
+              Folder = $_
+              Ada    = $ada
+              GB     = if ($ada) { Get-DirSizeGB $_ } else { 0 }
+            }
+          } | Format-Table -AutoSize
+
+      - name: Hapus kandidat (cuma kalau hapus = true)
+        if: ${{ inputs.hapus }}
+        shell: pwsh
+        run: |
+          $kandidat = @(
+            'C:\Android',
+            'C:\Program Files (x86)\Android',
+            'C:\Program Files\Microsoft SQL Server',
+            'C:\Julia',
+            'C:\hostedtoolcache\windows\Ruby',
+            'C:\hostedtoolcache\windows\PyPy',
+            'C:\hostedtoolcache\windows\go'
+          )
+          foreach ($p in $kandidat) {
+            Write-Host "Hapus: $p"
+            Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -in 'C','D' } |
+            Select-Object Name,
+              @{n='Used_GB';e={[math]::Round($_.Used/1GB,1)}},
+              @{n='Free_GB';e={[math]::Round($_.Free/1GB,1)}} | Format-Table
